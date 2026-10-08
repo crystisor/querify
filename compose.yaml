@@ -1,0 +1,11 @@
+services:
+  vane:
+    image: itzcrazykns1337/vane:latest
+    container_name: vane
+    ports:
+      - "3000:3000"
+    volumes:
+      - vane-data:/home/vane/data
+
+volumes:
+  vane-data:

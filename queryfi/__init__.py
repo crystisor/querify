@@ -1,0 +1,1 @@
+"""Queryfi course channel bot."""
