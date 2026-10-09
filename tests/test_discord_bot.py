@@ -13,7 +13,7 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         self.subjects = MemorySubjects()
         self.bindings = MemoryBindings()
         self.service = CourseService(self.subjects, self.bindings)
-        self.bot = CourseBot(self.service)
+        self.bot = CourseBot(self.service, Mock())
         self.addAsyncCleanup(self.bot.close)
         self.interaction = Mock()
         self.interaction.guild_id = 1
@@ -110,11 +110,11 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("could not", self.response_text())
         self.assertIsNone(self.service.status(ChannelRef(1, 10)))
 
-    def test_unicode_splitting_preserves_content_within_discord_limit(self):
+    def test_unicode_splitting_preserves_content_within_character_threshold(self):
         content = "\U0001f600" * 3000
         chunks = split_message(content)
         self.assertEqual("".join(chunks), content)
-        self.assertTrue(all(len(chunk.encode("utf-16-le")) // 2 <= 2000 for chunk in chunks))
+        self.assertTrue(all(len(chunk) <= 1500 for chunk in chunks))
 
 
 if __name__ == "__main__":

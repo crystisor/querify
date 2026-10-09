@@ -89,3 +89,14 @@ class HttpTests(unittest.TestCase):
         with self.assertRaises(ServiceError) as caught:
             JsonHttp("http://localhost:5055").request("GET", "/api/notebooks")
         self.assertNotIn("secret", str(caught.exception))
+
+
+class ChatTimeoutTests(unittest.TestCase):
+    @patch("queryfi.http.urlopen")
+    def test_chat_can_wait_longer_without_changing_default_timeout(self, open_url):
+        open_url.return_value.__enter__.return_value.read.return_value = b'{}'
+        client = JsonHttp("http://localhost:5055")
+        client.request("POST", "/api/chat/execute", {}, timeout=240)
+        self.assertEqual(open_url.call_args.kwargs["timeout"], 240)
+        client.request("GET", "/api/notebooks")
+        self.assertEqual(open_url.call_args.kwargs["timeout"], 15)

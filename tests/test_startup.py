@@ -17,6 +17,9 @@ class StartupTests(unittest.TestCase):
         service_patch = patch("bot.create_service")
         self.create_service = service_patch.start()
         self.addCleanup(service_patch.stop)
+        prompts_patch = patch("bot.create_prompt_service")
+        self.create_prompts = prompts_patch.start()
+        self.addCleanup(prompts_patch.stop)
 
     def test_loads_discord_settings_from_dotenv_beside_script(self):
         (self.root / ".env").write_text(
@@ -25,7 +28,8 @@ class StartupTests(unittest.TestCase):
         )
         with patch.dict("os.environ", {}, clear=True), patch("bot.CourseBot") as bot:
             main()
-        self.assertEqual(len(bot.call_args.args), 1)
+        bot.assert_called_once_with(self.create_service.return_value, self.create_prompts.return_value)
+        self.create_prompts.assert_called_once()
         bot.return_value.run.assert_called_once_with("file-token", log_handler=None)
         self.create_service.return_value.list_subjects.assert_called_once_with(0)
 
@@ -47,5 +51,13 @@ class StartupTests(unittest.TestCase):
         self.create_service.return_value.list_subjects.side_effect = RuntimeError("SurrealDB unavailable")
         with patch.dict("os.environ", {"DISCORD_TOKEN": "token"}, clear=True), patch("bot.CourseBot") as bot:
             with self.assertRaisesRegex(SystemExit, "SurrealDB unavailable"):
+                main()
+        bot.assert_not_called()
+
+
+    def test_invalid_ollama_configuration_exits_before_discord_login(self):
+        self.create_prompts.side_effect = ValueError("Choose an Ollama language model")
+        with patch.dict("os.environ", {"DISCORD_TOKEN": "token"}, clear=True), patch("bot.CourseBot") as bot:
+            with self.assertRaisesRegex(SystemExit, "Ollama"):
                 main()
         bot.assert_not_called()

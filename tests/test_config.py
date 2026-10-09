@@ -1,8 +1,8 @@
 import base64
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from queryfi.config import create_service
+from queryfi.config import create_prompt_service, create_service
 
 
 class ConfigTests(unittest.TestCase):
@@ -24,3 +24,23 @@ class ConfigTests(unittest.TestCase):
     def test_missing_database_configuration_is_actionable(self):
         with self.assertRaisesRegex(ValueError, "SURREAL_URL"):
             create_service({})
+
+
+class PromptConfigTests(unittest.TestCase):
+    @patch("queryfi.config.OpenNotebookChat")
+    @patch("queryfi.config.select_ollama_model", return_value="model:local")
+    @patch("queryfi.config.JsonHttp")
+    def test_uses_notebook_auth_and_explicit_model_and_timeout(self, http, select, chat):
+        create_prompt_service({"OPEN_NOTEBOOK_URL": "http://notebook:5055",
+                               "OPEN_NOTEBOOK_PASSWORD": "api-password",
+                               "OPEN_NOTEBOOK_MODEL_ID": "model:local",
+                               "OPEN_NOTEBOOK_CHAT_TIMEOUT": "240"}, Mock())
+        http.assert_called_once_with("http://notebook:5055", {"Authorization": "Bearer api-password"})
+        select.assert_called_once_with(http.return_value, "model:local")
+        settings = chat.call_args.args[1]
+        self.assertEqual(settings.model_id, "model:local")
+        self.assertEqual(settings.timeout, 240)
+
+    def test_non_numeric_timeout_is_actionable(self):
+        with self.assertRaisesRegex(ValueError, "OPEN_NOTEBOOK_CHAT_TIMEOUT"):
+            create_prompt_service({"OPEN_NOTEBOOK_CHAT_TIMEOUT": "forever"}, Mock())

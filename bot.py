@@ -6,7 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from queryfi.config import create_service
+from queryfi.config import create_prompt_service, create_service
 from queryfi.discord_bot import CourseBot
 
 ROOT = Path(__file__).resolve().parent
@@ -20,9 +20,10 @@ def main() -> None:
     try:
         service = create_service(os.environ)
         service.list_subjects(0)  # Verify both connections before logging into Discord.
+        prompts = create_prompt_service(os.environ, service)
     except (ValueError, RuntimeError) as error:
         raise SystemExit(str(error)) from None
-    bot = CourseBot(service)
+    bot = CourseBot(service, prompts)
     bot.run(token, log_handler=None)
 
 

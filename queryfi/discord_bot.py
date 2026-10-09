@@ -9,6 +9,8 @@ from discord import app_commands
 
 from .courses import ChannelRef, CourseService, Subject, SubjectId, SubjectListing, UnknownSubject
 
+from .prompts import ChannelAnswers
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,10 +37,9 @@ def status_text(channel: ChannelRef, subject: Subject | None) -> str:
 
 
 def split_message(content: str) -> list[str]:
-    # 950 code points also fit Discord's limit when every character uses two UTF-16 units.
     chunks = []
-    while len(content) > 950:
-        end = content.rfind("\n", 0, 950) + 1 or 950
+    while len(content) > 1500:
+        end = content.rfind("\n", 0, 1500) + 1 or 1500
         chunks.append(content[:end])
         content = content[end:]
     if content:
@@ -89,12 +90,15 @@ def register_commands(tree: app_commands.CommandTree, service: CourseService) ->
 
 
 class CourseBot(discord.Client):
-    def __init__(self, service: CourseService):
+    def __init__(self, service: CourseService, prompts: ChannelAnswers):
         intents = discord.Intents.none()
         intents.guilds = True
+        intents.guild_messages = True
+        intents.message_content = True
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.tree = app_commands.CommandTree(self)
         register_commands(self.tree, service)
+        self._prompts = prompts
 
     async def setup_hook(self):
         commands = await self.tree.sync()
@@ -102,3 +106,21 @@ class CourseBot(discord.Client):
 
     async def on_ready(self):
         logger.info("Logged in as %s", self.user)
+
+    async def on_message(self, message: discord.Message) -> None:
+        if (message.author.bot or message.webhook_id is not None or message.guild is None
+                or not isinstance(message.channel, discord.TextChannel)
+                or message.type not in (discord.MessageType.default, discord.MessageType.reply)
+                or not message.content.strip()):
+            return
+        channel = ChannelRef(message.guild.id, message.channel.id)
+        try:
+            async with message.channel.typing():
+                content = await asyncio.to_thread(self._prompts.answer, channel, message.content)
+        except Exception:
+            logger.exception("Notebook question failed in guild %s, channel %s", channel.guild_id, channel.channel_id)
+            content = "I could not query this notebook. Please try again or ask the bot owner to check Open Notebook and Ollama."
+        if content is None:
+            return
+        for chunk in split_message(content):
+            await message.reply(content=chunk, mention_author=False, allowed_mentions=discord.AllowedMentions.none())

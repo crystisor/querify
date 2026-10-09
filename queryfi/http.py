@@ -20,12 +20,12 @@ class JsonHttp:
         self._base_url = base_url.rstrip("/")
         self._headers = {"Accept": "application/json", **(headers or {})}
 
-    def request(self, method: str, path: str, payload: object = None) -> object:
+    def request(self, method: str, path: str, payload: object = None, *, timeout: float = 15) -> object:
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {**self._headers, "Content-Type": "application/json"}
         request = Request(self._base_url + path, data=body, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=15) as response:
+            with urlopen(request, timeout=timeout) as response:
                 return json.loads(response.read())
         except HTTPError as error:
             raise ServiceError(f"Service request to {path} failed (HTTP {error.code}).") from None

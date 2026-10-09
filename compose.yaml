@@ -2,10 +2,34 @@ services:
   vane:
     image: itzcrazykns1337/vane:latest
     container_name: vane
+    restart: unless-stopped
+    environment:
+      SEARXNG_API_URL: http://searxng:8080
+    depends_on:
+      searxng:
+        condition: service_healthy
     ports:
       - "3000:3000"
     volumes:
       - vane-data:/home/vane/data
 
+  searxng:
+    image: searxng/searxng@sha256:cc026dbee25b864d7f9731957cd5ef36ba2e2d61abd2996d57f1b863483e7409
+    restart: unless-stopped
+    env_file:
+      - .env.searxng
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
 volumes:
   vane-data:
+    external: true
+    name: vane-data
+  searxng-cache:
