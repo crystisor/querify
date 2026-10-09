@@ -3,8 +3,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from queryfi.courses import ChannelRef, SubjectId
+from queryfi.conversations import ConversationOwner, SessionId
 from queryfi.http import JsonHttp, ServiceError
-from queryfi.storage import OpenNotebookSubjects, SurrealBindings
+from queryfi.storage import OpenNotebookSubjects, SurrealBindings, SurrealSessionOwners
 
 
 class NotebookTests(unittest.TestCase):
@@ -69,6 +70,39 @@ class SurrealTests(unittest.TestCase):
                 self.http.request.return_value = response
                 with self.assertRaises(ServiceError):
                     self.store.bind(ChannelRef(1, 10), SubjectId("notebook:a"))
+
+
+class SessionOwnerStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.http = Mock()
+        self.store = SurrealSessionOwners(self.http)
+        self.session = SessionId("chat_session:abc")
+        self.owner = ConversationOwner(ChannelRef(42, 1234567890123456789), 987654321098765432)
+        self.subject = SubjectId("notebook:math")
+        self.row = {"session_id": self.session.value, "guild_id": "42",
+                    "channel_id": "1234567890123456789", "user_id": "987654321098765432",
+                    "notebook_id": "notebook:math"}
+
+    def test_records_session_ownership_with_parameterized_ids_and_exact_snowflakes(self):
+        self.http.request.return_value = {"result": [{"status": "OK", "result": [self.row]}]}
+        self.store.record(self.session, self.owner, self.subject)
+        query, variables = self.http.request.call_args.args[2]["params"]
+        self.assertIn("queryfi_session_owner", query)
+        self.assertNotIn(self.session.value, query)
+        self.assertNotIn(self.subject.value, query)
+        self.assertEqual(variables, self.row)
+        self.http.request.assert_called_once()
+
+    def test_failed_empty_or_mismatched_writes_are_rejected(self):
+        wrong_user = dict(self.row, user_id="other")
+        for response in ({"error": {"message": "denied"}},
+                         {"result": [{"status": "ERR", "result": "denied"}]},
+                         {"result": [{"status": "OK", "result": []}]},
+                         {"result": [{"status": "OK", "result": [wrong_user]}]}):
+            with self.subTest(response=response):
+                self.http.request.return_value = response
+                with self.assertRaises(ServiceError):
+                    self.store.record(self.session, self.owner, self.subject)
 
 
 class HttpTests(unittest.TestCase):

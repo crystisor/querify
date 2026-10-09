@@ -4,9 +4,9 @@ import math
 from dataclasses import dataclass
 from urllib.parse import urlencode
 
+from .conversations import NotebookQuestion, SessionId
 from .courses import SubjectId
 from .http import JsonHttp, ServiceError
-from .prompts import NotebookQuestion
 
 NO_SOURCES = "This notebook has no readable sources yet. Add sources and finish processing them in Open Notebook, then try again."
 
@@ -95,22 +95,21 @@ class OpenNotebookChat:
         context = NotebookSourceContext(self._http).build(question.subject_id)
         if not context["sources"]:
             return NO_SOURCES
-        session_id = self._create_session(question.subject_id)
         response = self._http.request("POST", "/api/chat/execute", {
-            "session_id": session_id, "message": question.prompt,
+            "session_id": question.session_id.value, "message": question.prompt,
             "context": context, "model_override": self._settings.model_id,
         }, timeout=self._settings.timeout)
         return self._answer_text(response)
 
-    def _create_session(self, subject_id: SubjectId) -> str:
+    def create_session(self, subject_id: SubjectId) -> SessionId:
         session = self._http.request("POST", "/api/chat/sessions", {
-            "notebook_id": subject_id.value, "title": "Queryfi Discord question",
+            "notebook_id": subject_id.value, "title": "Queryfi Discord conversation",
             "model_override": self._settings.model_id,
         })
         session_id = session.get("id") if isinstance(session, dict) else None
         if not isinstance(session_id, str) or not session_id.strip():
             raise ServiceError("Open Notebook did not create a chat session.")
-        return session_id
+        return SessionId(session_id)
 
     @staticmethod
     def _answer_text(response: object) -> str:

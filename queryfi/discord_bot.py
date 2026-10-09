@@ -7,8 +7,8 @@ from collections.abc import Callable
 import discord
 from discord import app_commands
 
+from .conversations import ConversationOwner
 from .courses import ChannelRef, CourseService, Subject, SubjectId, SubjectListing, UnknownSubject
-
 from .prompts import ChannelAnswers
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ async def respond(interaction: discord.Interaction, operation: Callable[[Channel
         await interaction.followup.send(content=chunk, allowed_mentions=discord.AllowedMentions.none())
 
 
-def register_commands(tree: app_commands.CommandTree, service: CourseService) -> None:
+def register_commands(tree: app_commands.CommandTree, service: CourseService, prompts: ChannelAnswers) -> None:
     @tree.command(name="list", description="List course subjects and their bound text channels.")
     @app_commands.guild_only()
     async def list_subjects(interaction: discord.Interaction):
@@ -88,6 +88,18 @@ def register_commands(tree: app_commands.CommandTree, service: CourseService) ->
             channel, service.bind(channel, SubjectId(subject_id.strip()))
         ))
 
+    @tree.command(name="start", description="Start your conversation for this course channel.")
+    @app_commands.guild_only()
+    async def start(interaction: discord.Interaction):
+        await respond(interaction, lambda channel: prompts.start(
+            ConversationOwner(channel, interaction.user.id)))
+
+    @tree.command(name="end", description="End your current conversation in this course channel.")
+    @app_commands.guild_only()
+    async def end(interaction: discord.Interaction):
+        await respond(interaction, lambda channel: prompts.end(
+            ConversationOwner(channel, interaction.user.id)))
+
 
 class CourseBot(discord.Client):
     def __init__(self, service: CourseService, prompts: ChannelAnswers):
@@ -97,7 +109,7 @@ class CourseBot(discord.Client):
         intents.message_content = True
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.tree = app_commands.CommandTree(self)
-        register_commands(self.tree, service)
+        register_commands(self.tree, service, prompts)
         self._prompts = prompts
 
     async def setup_hook(self):
@@ -114,9 +126,10 @@ class CourseBot(discord.Client):
                 or not message.content.strip()):
             return
         channel = ChannelRef(message.guild.id, message.channel.id)
+        owner = ConversationOwner(channel, message.author.id)
         try:
             async with message.channel.typing():
-                content = await asyncio.to_thread(self._prompts.answer, channel, message.content)
+                content = await asyncio.to_thread(self._prompts.answer, owner, message.content)
         except Exception:
             logger.exception("Notebook question failed in guild %s, channel %s", channel.guild_id, channel.channel_id)
             content = "I could not query this notebook. Please try again or ask the bot owner to check Open Notebook and Ollama."

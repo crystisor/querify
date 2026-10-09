@@ -1,12 +1,14 @@
 # Queryfi Discord bot
 
-A Python bot that answers text prompts in bound channels using Open Notebook sources and its configured Ollama model. Three server slash commands manage bindings:
+A Python bot that answers text prompts in bound channels using Open Notebook sources, conversation history, and its configured Ollama model. Five server slash commands manage bindings and conversations:
 
 | Command | Result |
 | --- | --- |
 | `/list` | Reads Open Notebook notebooks and lists their IDs, names, and bound channels in this server. |
 | `/status` | Shows whether the current text channel is bound and to which subject. |
 | `/bind subject_id:<id>` | Binds the current text channel to that notebook ID in SurrealDB. Unknown IDs are rejected. |
+| `/start` | Creates your Open Notebook conversation for this channel. If one is already active, asks you to use `/end` first. |
+| `/end` | Ends only your active conversation in this channel. Its history remains in Open Notebook. |
 
 Each notebook represents one course subject. Each channel holds one subject; rebinding replaces that channel's previous binding. A subject can be bound to several channels. Bindings persist in Open Notebook's SurrealDB database, in the `queryfi_channel_binding` table, and are isolated by server. Notebook and source records are not modified. All server members with access to the commands can use them, including `/bind`; no administrator permission is required. Responses are visible in the channel. DMs, threads, voice channels, and forum posts are not supported.
 
@@ -34,7 +36,7 @@ SURREAL_USER=root
 SURREAL_PASSWORD=your-surrealdb-password
 ```
 
-Use the same database, namespace, and database credentials as Open Notebook. `SURREAL_URL` is the host-published HTTP(S) base URL without `/rpc`; this machine's Open Notebook compose file publishes port 8001. `OPEN_NOTEBOOK_URL` is the API base URL without `/api`. Leave `OPEN_NOTEBOOK_PASSWORD` empty if API authentication is disabled. The Open Notebook API password and SurrealDB password are separate settings. The database user needs read/write access to `queryfi_channel_binding` and permission to create it on first use.
+Use the same database, namespace, and database credentials as Open Notebook. `SURREAL_URL` is the host-published HTTP(S) base URL without `/rpc`; this machine's Open Notebook compose file publishes port 8001. `OPEN_NOTEBOOK_URL` is the API base URL without `/api`. Leave `OPEN_NOTEBOOK_PASSWORD` empty if API authentication is disabled. The Open Notebook API password and SurrealDB password are separate settings. The database user needs read/write access to `queryfi_channel_binding`, write access to `queryfi_session_owner`, and permission to create these tables on first use.
 
 The bot automatically loads this file on startup, even when launched from another directory. Existing environment variables take precedence over `.env` values. The file is excluded from Git by `.gitignore`. Restart the bot after changing it. Startup verifies the API and database connections and checks that the selected chat model is an Ollama language model before logging into Discord.
 
@@ -46,7 +48,7 @@ Create an application in the [Discord Developer Portal](https://discord.com/deve
 
 Use a bot token, keep it private, and set it locally in `.env` or through the environment. You interact with the bot from your normal Discord account. The script connects as the separate bot account. Enable **Message Content Intent** under **Bot > Privileged Gateway Intents** in the Developer Portal. The bot requests this intent to read ordinary text prompts; without it, the message flow cannot work. No members or presence intent is needed. See [Discord's bot overview](https://docs.discord.com/developers/bots/overview) and the [discord.py slash command example](https://github.com/Rapptz/discord.py/blob/master/examples/app_commands/basic.py).
 
-Startup registers `/list`, `/status`, and `/bind` globally so they are available in servers where the bot is installed. Commands remain restricted to server text channels. Keep the script running to answer commands and prompts; stop it with Ctrl+C. This bot application should be dedicated to Queryfi: command synchronization replaces that application's global command set. If commands do not appear, check installation scopes, integration command permissions, and startup logs.
+Startup registers `/list`, `/status`, `/bind`, `/start`, and `/end` globally so they are available in servers where the bot is installed. Commands remain restricted to server text channels. Keep the script running to answer commands and prompts; stop it with Ctrl+C. This bot application should be dedicated to Queryfi: command synchronization replaces that application's global command set. If commands do not appear, check installation scopes, integration command permissions, and startup logs.
 
 ## Try the commands
 
@@ -60,9 +62,15 @@ Notebook names are display labels, so renaming one keeps its bindings. The catal
 
 Use an Ollama **language** model already registered in Open Notebook, with working provider credentials/base URL. Leave `OPEN_NOTEBOOK_MODEL_ID` empty to select Open Notebook's default chat model at startup. To override it, set the registered `model:...` ID from `GET /api/models?type=language`, rather than an Ollama name such as `gemma4_e2b_q8:latest`. Restart the bot after changing the model or its default assignment. Queryfi calls Open Notebook; Open Notebook connects to Ollama using its existing configuration. A separate Ollama installation or direct bot-to-Ollama connection is unnecessary.
 
-Every non-empty user text message in a bound server text channel becomes a question. Bot/webhook messages, system messages, DMs, threads, and attachment-only messages are ignored. Unbound channels receive no answer. Rebinding takes effect on the next question.
+Every non-empty user text message in a bound server text channel becomes a question. Bot/webhook messages, system messages, DMs, threads, and attachment-only messages are ignored. Unbound channels receive no answer. Course bindings are expected to remain fixed while conversations are active.
 
-For each question, Queryfi lists the bound notebook's sources (including all pages), builds their full-content context through `/api/chat/context`, creates a notebook chat session, and calls `/api/chat/execute` with the selected Ollama model. It excludes notebook notes and sources from other notebooks. Each prompt creates a separate `Queryfi Discord question` session visible in Open Notebook; replies do not carry previous Discord conversation history. Notebook and source records are left unchanged. Source references returned by Open Notebook are preserved in the answer.
+Each user has their own active conversation in each server text channel. `/start` creates an Open Notebook chat session immediately without sending a question. Sending a message with no active conversation creates one automatically. Follow-up messages reuse that session ID, allowing Open Notebook to supply its built-in message history. `/start` never replaces an active conversation; use `/end` first. `/end` affects only the caller's conversation in that channel, and the next message starts a fresh one. Questions and replies remain visible to everyone with access to the channel.
+
+Active session IDs are held only in bot memory. Stopping or restarting the bot forgets them; Discord cannot resume previous sessions. Sessions and their messages remain available to open and continue in Open Notebook's GUI. Continuing a session there while it is still active in Discord contributes to the same history.
+
+The `queryfi_session_owner` table records each new session's Open Notebook session ID, Discord user ID, server ID, channel ID, and notebook ID. Discord IDs are stored as strings to preserve their full precision. Ownership records remain after `/end` or a restart and are never used to restore active conversations. Open Notebook owns the message history; the bot does not copy it into this table. Messages are sent without per-conversation queues or sequential processing.
+
+For each question, Queryfi lists the bound notebook's sources (including all pages), builds their full-content context through `/api/chat/context`, and calls `/api/chat/execute` with the active session ID and selected Ollama model. It excludes notebook notes and sources from other notebooks. New sessions are titled `Queryfi Discord conversation` in Open Notebook. Notebook and source records are left unchanged. Source references returned by Open Notebook are preserved in the answer.
 
 Empty or unprocessed notebooks receive an explanation instead of an ungrounded model call. API/model failures return a generic error in Discord, with details in the bot logs. Long answers are split across replies, and generated text cannot trigger mentions. Source context must fit the chosen model's context window; Queryfi sends full content and does not silently truncate or run a global search. `OPEN_NOTEBOOK_CHAT_TIMEOUT` sets the chat request timeout in seconds (default `180`); increase it for slow local inference. Other API/database requests retain their 15-second timeout.
 
@@ -74,7 +82,7 @@ The API contract is documented in the [Open Notebook API reference](https://gith
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Tests cover commands, message routing, notebook source isolation and pagination, Ollama model selection, long replies, timeouts, API validation, parameterized database requests, error handling, and startup configuration without connecting to Discord. To also test real persistence, rebinding, and server isolation against your configured services:
+Tests cover commands, message routing, conversation reuse and user/channel/server isolation, `/end`, lost active sessions after restart, session ownership writes, notebook source isolation and pagination, Ollama model selection, long replies, timeouts, API validation, parameterized database requests, error handling, and startup configuration without connecting to Discord. To also test real binding persistence, rebinding, and server isolation against your configured services:
 
 ```powershell
 $env:QUERYFI_LIVE_TEST = "1"

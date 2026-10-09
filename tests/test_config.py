@@ -34,8 +34,13 @@ class PromptConfigTests(unittest.TestCase):
         create_prompt_service({"OPEN_NOTEBOOK_URL": "http://notebook:5055",
                                "OPEN_NOTEBOOK_PASSWORD": "api-password",
                                "OPEN_NOTEBOOK_MODEL_ID": "model:local",
-                               "OPEN_NOTEBOOK_CHAT_TIMEOUT": "240"}, Mock())
-        http.assert_called_once_with("http://notebook:5055", {"Authorization": "Bearer api-password"})
+                               "OPEN_NOTEBOOK_CHAT_TIMEOUT": "240",
+                               "SURREAL_URL": "http://database:8001",
+                               "SURREAL_NAMESPACE": "open_notebook", "SURREAL_DATABASE": "open_notebook",
+                               "SURREAL_USER": "root", "SURREAL_PASSWORD": "db-password"}, Mock())
+        notebook, database = http.call_args_list
+        self.assertEqual(notebook.args, ("http://notebook:5055", {"Authorization": "Bearer api-password"}))
+        self.assertEqual(database.args[0], "http://database:8001")
         select.assert_called_once_with(http.return_value, "model:local")
         settings = chat.call_args.args[1]
         self.assertEqual(settings.model_id, "model:local")

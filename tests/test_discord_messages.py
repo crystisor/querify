@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 import discord
 
 from queryfi.courses import ChannelRef
+from queryfi.conversations import ConversationOwner
 from queryfi.discord_bot import CourseBot
 
 
@@ -15,6 +16,7 @@ class DiscordMessageTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.bot.close)
         self.message = Mock()
         self.message.author.bot = False
+        self.message.author.id = 1234567890123456789
         self.message.webhook_id = None
         self.message.guild.id = 1
         self.message.channel = Mock(spec=discord.TextChannel)
@@ -26,7 +28,8 @@ class DiscordMessageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_message_is_sent_to_prompt_service_and_answer_replies_without_mentions(self):
         await self.bot.on_message(self.message)
-        self.prompts.answer.assert_called_once_with(ChannelRef(1, 10), "Explain matrices")
+        self.prompts.answer.assert_called_once_with(
+            ConversationOwner(ChannelRef(1, 10), 1234567890123456789), "Explain matrices")
         reply = self.message.reply.call_args
         self.assertEqual(reply.kwargs["content"], "Answer from the notebook")
         self.assertEqual(reply.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())

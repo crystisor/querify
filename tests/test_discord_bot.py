@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 
 from queryfi.courses import ChannelRef, CourseService, Subject, SubjectId
+from queryfi.conversations import ConversationOwner
 from queryfi.discord_bot import CourseBot, split_message
 from fakes import MemorySubjects, MemoryBindings
 
@@ -13,10 +14,12 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         self.subjects = MemorySubjects()
         self.bindings = MemoryBindings()
         self.service = CourseService(self.subjects, self.bindings)
-        self.bot = CourseBot(self.service, Mock())
+        self.prompts = Mock()
+        self.bot = CourseBot(self.service, self.prompts)
         self.addAsyncCleanup(self.bot.close)
         self.interaction = Mock()
         self.interaction.guild_id = 1
+        self.interaction.user.id = 1234567890123456789
         self.interaction.channel = Mock(spec=discord.TextChannel)
         self.interaction.channel.id = 10
         self.interaction.response.defer = AsyncMock()
@@ -68,7 +71,7 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.setup_hook()
         self.bot.tree.sync.assert_awaited_once_with()
         commands = self.bot.tree.get_commands()
-        self.assertEqual({command.name for command in commands}, {"list", "status", "bind"})
+        self.assertEqual({command.name for command in commands}, {"list", "status", "bind", "start", "end"})
         self.assertTrue(all(command.guild_only for command in commands))
         self.assertEqual(self.bot.tree.get_commands(guild=discord.Object(id=1)), [])
 
@@ -109,6 +112,27 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
                 await self.invoke("bind", "math")
         self.assertIn("could not", self.response_text())
         self.assertIsNone(self.service.status(ChannelRef(1, 10)))
+
+    async def test_conversation_commands_use_callers_user_and_channel(self):
+        owner = ConversationOwner(ChannelRef(1, 10), 1234567890123456789)
+        for command, method in (("start", self.prompts.start), ("end", self.prompts.end)):
+            method.return_value = "Conversation response"
+            await self.invoke(command)
+            method.assert_called_once_with(owner)
+            self.assertEqual(self.response_text(), "Conversation response")
+
+    async def test_conversation_commands_reject_dms_and_threads(self):
+        self.interaction.channel = Mock(spec=discord.Thread)
+        for command in ("start", "end"):
+            await self.invoke(command)
+        self.prompts.start.assert_not_called()
+        self.prompts.end.assert_not_called()
+
+    async def test_conversation_command_failure_never_reports_success(self):
+        self.prompts.start.side_effect = RuntimeError("database offline")
+        with self.assertLogs("queryfi.discord_bot", level="ERROR"):
+            await self.invoke("start")
+        self.assertIn("could not", self.response_text())
 
     def test_unicode_splitting_preserves_content_within_character_threshold(self):
         content = "\U0001f600" * 3000

@@ -4,19 +4,18 @@ from unittest.mock import Mock
 from queryfi.courses import SubjectId
 from queryfi.http import ServiceError
 from queryfi.notebook_chat import ChatSettings, OpenNotebookChat, select_ollama_model
-from queryfi.prompts import NotebookQuestion
+from queryfi.conversations import NotebookQuestion, SessionId
 
 
 class NotebookChatTests(unittest.TestCase):
     def setUp(self):
         self.http = Mock()
         self.chat = OpenNotebookChat(self.http, ChatSettings("model:local", 180))
-        self.question = NotebookQuestion(SubjectId("notebook:math"), "Explain matrices")
+        self.question = NotebookQuestion(SubjectId("notebook:math"), "Explain matrices", SessionId("chat_session:one"))
         self.context = {"sources": [{"id": "source:a", "full_text": "Matrices contain numbers."}], "notes": []}
         self.responses = [
             [{"id": "source:a"}],
             {"context": self.context},
-            {"id": "chat_session:one"},
             {"messages": [{"type": "human", "content": "Explain matrices"},
                           {"type": "ai", "content": "They contain numbers. [source:a]"}]},
         ]
@@ -31,13 +30,11 @@ class NotebookChatTests(unittest.TestCase):
             "notebook_id": "notebook:math",
             "context_config": {"sources": {"source:a": "full content"}, "notes": {}},
         })
-        self.assertEqual(calls[2].args[2]["notebook_id"], "notebook:math")
-        self.assertEqual(calls[2].args[2]["model_override"], "model:local")
-        self.assertEqual(calls[3].args[2], {
+        self.assertEqual(calls[2].args[2], {
             "session_id": "chat_session:one", "message": "Explain matrices",
             "context": self.context, "model_override": "model:local",
         })
-        self.assertEqual(calls[3].kwargs["timeout"], 180)
+        self.assertEqual(calls[2].kwargs["timeout"], 180)
 
     def test_all_source_pages_are_included(self):
         page = [{"id": f"source:{index}"} for index in range(100)]
@@ -70,9 +67,9 @@ class NotebookChatTests(unittest.TestCase):
 
     def test_malformed_response_or_missing_ai_answer_is_not_success(self):
         for index, replacement in ((0, {}), (0, [{"id": None}]), (1, {}),
-                                   (2, {"id": ""}), (3, {}),
-                                   (3, {"messages": [{"type": "human", "content": "Echo"}]}),
-                                   (3, {"messages": [{"type": "ai", "content": " "}]})):
+                                   (2, {}),
+                                   (2, {"messages": [{"type": "human", "content": "Echo"}]}),
+                                   (2, {"messages": [{"type": "ai", "content": " "}]})):
             with self.subTest(index=index, replacement=replacement):
                 responses = self.responses.copy()
                 responses[index] = replacement
@@ -80,13 +77,36 @@ class NotebookChatTests(unittest.TestCase):
                 with self.assertRaises(ServiceError):
                     self.chat.answer(self.question)
 
-    def test_each_prompt_creates_a_new_session(self):
-        second = [*self.responses[:2], {"id": "chat_session:two"}, self.responses[3]]
-        self.http.request.side_effect = self.responses + second
+    def test_followups_execute_in_supplied_session_without_creating_new_sessions(self):
+        self.http.request.side_effect = self.responses * 2
         self.chat.answer(self.question)
         self.chat.answer(self.question)
         executions = [call.args[2] for call in self.http.request.call_args_list if call.args[1] == "/api/chat/execute"]
-        self.assertEqual([entry["session_id"] for entry in executions], ["chat_session:one", "chat_session:two"])
+        self.assertEqual([entry["session_id"] for entry in executions], ["chat_session:one"] * 2)
+        self.assertNotIn("/api/chat/sessions", [call.args[1] for call in self.http.request.call_args_list])
+
+    def test_create_session_uses_notebook_and_model_without_sending_question(self):
+        self.http.request.return_value = {"id": "chat_session:new"}
+        self.assertEqual(self.chat.create_session(self.question.subject_id), SessionId("chat_session:new"))
+        self.http.request.assert_called_once_with("POST", "/api/chat/sessions", {
+            "notebook_id": "notebook:math", "title": "Queryfi Discord conversation",
+            "model_override": "model:local",
+        })
+
+    def test_invalid_session_creation_responses_are_rejected(self):
+        for response in ({}, {"id": ""}, {"id": " "}, {"id": None}):
+            with self.subTest(response=response):
+                self.http.request.return_value = response
+                with self.assertRaises(ServiceError):
+                    self.chat.create_session(self.question.subject_id)
+
+    def test_history_response_returns_latest_assistant_answer(self):
+        self.responses[-1] = {"messages": [
+            {"type": "human", "content": "Old question"}, {"type": "ai", "content": "Old answer"},
+            {"type": "human", "content": "Followup"}, {"type": "ai", "content": "New answer"},
+        ]}
+        self.http.request.side_effect = self.responses
+        self.assertEqual(self.chat.answer(self.question), "New answer")
 
 
 class OllamaSelectionTests(unittest.TestCase):
