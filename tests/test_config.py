@@ -2,7 +2,7 @@ import base64
 import unittest
 from unittest.mock import Mock, patch
 
-from queryfi.config import create_prompt_service, create_service
+from queryfi.config import create_prompt_service, create_search_service, create_service
 
 
 class ConfigTests(unittest.TestCase):
@@ -49,3 +49,23 @@ class PromptConfigTests(unittest.TestCase):
     def test_non_numeric_timeout_is_actionable(self):
         with self.assertRaisesRegex(ValueError, "OPEN_NOTEBOOK_CHAT_TIMEOUT"):
             create_prompt_service({"OPEN_NOTEBOOK_CHAT_TIMEOUT": "forever"}, Mock())
+
+
+class SearchConfigTests(unittest.TestCase):
+    @patch("queryfi.config.SearxNCrawlSearch")
+    def test_passes_environment_and_timeout_to_search_without_network_calls(self, search):
+        environment = {"SEARXNG_URL": "http://localhost:8888", "SEARXNCRAWL_TIMEOUT": "90"}
+        self.assertIs(create_search_service(environment), search.return_value)
+        settings, passed_environment = search.call_args.args
+        self.assertEqual(settings.timeout, 90)
+        self.assertEqual(passed_environment, environment)
+
+    @patch("queryfi.config.SearxNCrawlSearch")
+    def test_search_is_optional_for_existing_bot_setups_and_defaults_to_60_seconds(self, search):
+        create_search_service({})
+        self.assertEqual(search.call_args.args[0].timeout, 60)
+
+    def test_invalid_search_timeout_is_actionable(self):
+        for value in ("forever", "", "0", "-1", "nan", "inf", "601"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "SEARXNCRAWL_TIMEOUT"):
+                create_search_service({"SEARXNCRAWL_TIMEOUT": value})

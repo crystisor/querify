@@ -6,6 +6,7 @@ import discord
 from queryfi.courses import ChannelRef, CourseService, Subject, SubjectId
 from queryfi.conversations import ConversationOwner
 from queryfi.discord_bot import CourseBot, split_message
+from queryfi.search import SearchError, SearchQuery, SearchResult
 from fakes import MemorySubjects, MemoryBindings
 
 
@@ -15,7 +16,8 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         self.bindings = MemoryBindings()
         self.service = CourseService(self.subjects, self.bindings)
         self.prompts = Mock()
-        self.bot = CourseBot(self.service, self.prompts)
+        self.search = Mock()
+        self.bot = CourseBot(self.service, self.prompts, self.search)
         self.addAsyncCleanup(self.bot.close)
         self.interaction = Mock()
         self.interaction.guild_id = 1
@@ -71,7 +73,7 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.setup_hook()
         self.bot.tree.sync.assert_awaited_once_with()
         commands = self.bot.tree.get_commands()
-        self.assertEqual({command.name for command in commands}, {"list", "status", "bind", "start", "end"})
+        self.assertEqual({command.name for command in commands}, {"list", "status", "bind", "start", "end", "search"})
         self.assertTrue(all(command.guild_only for command in commands))
         self.assertEqual(self.bot.tree.get_commands(guild=discord.Object(id=1)), [])
 
@@ -139,6 +141,73 @@ class DiscordCommandTests(unittest.IsolatedAsyncioTestCase):
         chunks = split_message(content)
         self.assertEqual("".join(chunks), content)
         self.assertTrue(all(len(chunk) <= 1500 for chunk in chunks))
+
+    async def test_search_works_in_unbound_channel_without_touching_conversations(self):
+        self.search.search.return_value = (
+            SearchResult("Python tutorial", "https://docs.python.org/3/", "Learn Python", ("searxng", "youcom")),
+        )
+        await self.invoke("search", "  Python tutorials  ")
+        self.search.search.assert_called_once_with(SearchQuery("Python tutorials"))
+        content = self.response_text()
+        for expected in ("Python tutorials", "Python tutorial", "https://docs.python.org/3/", "Learn Python", "searxng", "youcom"):
+            self.assertIn(expected, content)
+        self.interaction.response.defer.assert_awaited_once_with(thinking=True)
+        self.assertEqual(self.prompts.mock_calls, [])
+        self.assertIsNone(self.service.status(ChannelRef(1, 10)))
+
+    async def test_search_option_is_required_and_limits_query_length(self):
+        parameter, = self.bot.tree.get_command("search").parameters
+        self.assertEqual(parameter.name, "query")
+        self.assertTrue(parameter.required)
+        self.assertEqual((parameter.min_value, parameter.max_value), (1, 500))
+
+    async def test_search_rejects_invalid_query_before_calling_provider(self):
+        for query in ("  ", "x" * 501, "bad\0query"):
+            await self.invoke("search", query)
+        self.search.search.assert_not_called()
+        self.interaction.response.defer.assert_not_awaited()
+        self.assertTrue(self.interaction.response.send_message.call_args.kwargs["ephemeral"])
+
+    async def test_search_rejects_dms_and_non_text_channels(self):
+        for channel in (None, Mock(spec=discord.Thread), Mock(spec=discord.VoiceChannel)):
+            self.interaction.channel = channel
+            await self.invoke("search", "Python")
+        self.interaction.channel = Mock(spec=discord.TextChannel)
+        self.interaction.guild_id = None
+        await self.invoke("search", "Python")
+        self.search.search.assert_not_called()
+        self.interaction.response.defer.assert_not_awaited()
+
+    async def test_search_empty_results_are_explained(self):
+        self.search.search.return_value = ()
+        await self.invoke("search", "rare phrase")
+        self.assertIn("No web results", self.response_text())
+
+    async def test_search_expected_failures_are_actionable_and_unexpected_failures_are_private(self):
+        self.search.search.side_effect = SearchError("Web search timed out. Please try again.")
+        await self.invoke("search", "Python")
+        self.assertIn("timed out", self.response_text())
+        self.search.search.side_effect = RuntimeError("secret key")
+        with self.assertLogs("queryfi.discord_bot", level="ERROR"):
+            await self.invoke("search", "Python")
+        self.assertIn("could not", self.response_text())
+        self.assertNotIn("secret key", self.response_text())
+
+    async def test_search_splits_long_results_escapes_markdown_and_suppresses_mentions(self):
+        self.search.search.return_value = tuple(
+            SearchResult(f"**Title {index}** @everyone", f"https://example.com/{index}?q=<@123>",
+                         "A long snippet " * 100, ("searxng",)) for index in range(5)
+        )
+        await self.invoke("search", "**query** @everyone")
+        calls = [self.interaction.edit_original_response.call_args, *self.interaction.followup.send.call_args_list]
+        self.assertGreater(len(calls), 1)
+        for call in calls:
+            self.assertLessEqual(len(call.kwargs["content"]), 2000)
+            self.assertEqual(call.kwargs["allowed_mentions"].to_dict(), discord.AllowedMentions.none().to_dict())
+        combined = "".join(call.kwargs["content"] for call in calls)
+        self.assertIn(r"\*\*Title 4\*\*", combined)
+        self.assertNotIn("@everyone", combined)
+        self.assertNotIn("<@123>", combined)
 
 
 if __name__ == "__main__":
