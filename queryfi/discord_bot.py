@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Callable
+from urllib.parse import quote
 
 import discord
 from discord import app_commands
@@ -10,6 +11,7 @@ from discord import app_commands
 from .conversations import ConversationOwner
 from .courses import ChannelRef, CourseService, Subject, SubjectId, SubjectListing, UnknownSubject
 from .prompts import ChannelAnswers
+from .search import SearchError, SearchQuery, SearchResult, WebSearch
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,24 @@ def split_message(content: str) -> list[str]:
     return chunks
 
 
+def search_text(query: SearchQuery, results: tuple[SearchResult, ...]) -> str:
+    label = discord.utils.escape_markdown(discord.utils.escape_mentions(query.value))
+    if not results:
+        return f"No web results found for **{label}**. Try a different query."
+    lines = [f"Web results for **{label}**:"]
+    for index, result in enumerate(results, 1):
+        title = discord.utils.escape_markdown(discord.utils.escape_mentions(result.title))
+        snippet = discord.utils.escape_markdown(discord.utils.escape_mentions(result.snippet))
+        url = quote(result.url, safe=":/?#[]@!$&'()*+,;=%")
+        lines.extend(("", f"{index}. **{title}**", f"<{url}>"))
+        if snippet:
+            lines.append(snippet)
+        if result.providers:
+            providers = discord.utils.escape_markdown(discord.utils.escape_mentions(", ".join(result.providers)))
+            lines.append(f"Providers: {providers}")
+    return "\n".join(lines)
+
+
 async def respond(interaction: discord.Interaction, operation: Callable[[ChannelRef], str]) -> None:
     if interaction.guild_id is None or not isinstance(interaction.channel, discord.TextChannel):
         await interaction.response.send_message("Use this command in a server text channel.", ephemeral=True)
@@ -55,10 +75,10 @@ async def respond(interaction: discord.Interaction, operation: Callable[[Channel
     channel = ChannelRef(interaction.guild_id, interaction.channel.id)
     try:
         content = await asyncio.to_thread(operation, channel)
-    except UnknownSubject as error:
+    except (UnknownSubject, SearchError) as error:
         content = str(error)
     except Exception:
-        logger.exception("Course command failed in guild %s, channel %s", channel.guild_id, channel.channel_id)
+        logger.exception("Slash command failed in guild %s, channel %s", channel.guild_id, channel.channel_id)
         content = "I could not complete that command. Please try again or ask the bot owner to check the logs."
     chunks = split_message(content)
     await interaction.edit_original_response(content=chunks[0], allowed_mentions=discord.AllowedMentions.none())
@@ -66,7 +86,8 @@ async def respond(interaction: discord.Interaction, operation: Callable[[Channel
         await interaction.followup.send(content=chunk, allowed_mentions=discord.AllowedMentions.none())
 
 
-def register_commands(tree: app_commands.CommandTree, service: CourseService, prompts: ChannelAnswers) -> None:
+def register_commands(tree: app_commands.CommandTree, service: CourseService, prompts: ChannelAnswers,
+                      web_search: WebSearch) -> None:
     @tree.command(name="list", description="List course subjects and their bound text channels.")
     @app_commands.guild_only()
     async def list_subjects(interaction: discord.Interaction):
@@ -100,16 +121,27 @@ def register_commands(tree: app_commands.CommandTree, service: CourseService, pr
         await respond(interaction, lambda channel: prompts.end(
             ConversationOwner(channel, interaction.user.id)))
 
+    @tree.command(name="search", description="Search the web using searxNcrawl.")
+    @app_commands.guild_only()
+    @app_commands.describe(query="The text to search for on the web")
+    async def search(interaction: discord.Interaction, query: app_commands.Range[str, 1, 500]):
+        try:
+            search_query = SearchQuery(query)
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+        await respond(interaction, lambda channel: search_text(search_query, web_search.search(search_query)))
+
 
 class CourseBot(discord.Client):
-    def __init__(self, service: CourseService, prompts: ChannelAnswers):
+    def __init__(self, service: CourseService, prompts: ChannelAnswers, web_search: WebSearch):
         intents = discord.Intents.none()
         intents.guilds = True
         intents.guild_messages = True
         intents.message_content = True
         super().__init__(intents=intents, allowed_mentions=discord.AllowedMentions.none())
         self.tree = app_commands.CommandTree(self)
-        register_commands(self.tree, service, prompts)
+        register_commands(self.tree, service, prompts, web_search)
         self._prompts = prompts
 
     async def setup_hook(self):

@@ -20,6 +20,9 @@ class StartupTests(unittest.TestCase):
         prompts_patch = patch("bot.create_prompt_service")
         self.create_prompts = prompts_patch.start()
         self.addCleanup(prompts_patch.stop)
+        search_patch = patch("bot.create_search_service")
+        self.create_search = search_patch.start()
+        self.addCleanup(search_patch.stop)
 
     def test_loads_discord_settings_from_dotenv_beside_script(self):
         (self.root / ".env").write_text(
@@ -28,7 +31,8 @@ class StartupTests(unittest.TestCase):
         )
         with patch.dict("os.environ", {}, clear=True), patch("bot.CourseBot") as bot:
             main()
-        bot.assert_called_once_with(self.create_service.return_value, self.create_prompts.return_value)
+        bot.assert_called_once_with(self.create_service.return_value, self.create_prompts.return_value,
+                                    self.create_search.return_value)
         self.create_prompts.assert_called_once()
         bot.return_value.run.assert_called_once_with("file-token", log_handler=None)
         self.create_service.return_value.list_subjects.assert_called_once_with(0)
@@ -51,6 +55,13 @@ class StartupTests(unittest.TestCase):
         self.create_service.return_value.list_subjects.side_effect = RuntimeError("SurrealDB unavailable")
         with patch.dict("os.environ", {"DISCORD_TOKEN": "token"}, clear=True), patch("bot.CourseBot") as bot:
             with self.assertRaisesRegex(SystemExit, "SurrealDB unavailable"):
+                main()
+        bot.assert_not_called()
+
+    def test_invalid_search_configuration_exits_before_discord_login(self):
+        self.create_search.side_effect = ValueError("SEARXNCRAWL_TIMEOUT is invalid")
+        with patch.dict("os.environ", {"DISCORD_TOKEN": "token"}, clear=True), patch("bot.CourseBot") as bot:
+            with self.assertRaisesRegex(SystemExit, "SEARXNCRAWL_TIMEOUT"):
                 main()
         bot.assert_not_called()
 

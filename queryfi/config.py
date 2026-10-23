@@ -8,6 +8,7 @@ from .conversations import ConversationService
 from .http import JsonHttp
 from .notebook_chat import ChatSettings, OpenNotebookChat, select_ollama_model
 from .prompts import PromptService
+from .searxncrawl import SearchSettings, SearxNCrawlSearch
 from .storage import OpenNotebookSubjects, SurrealBindings, SurrealSessionOwners
 
 
@@ -60,3 +61,11 @@ def create_prompt_service(environment: Mapping[str, str], courses: CourseService
         OpenNotebookChat(http, settings), SurrealSessionOwners(database_http(environment)),
     )
     return PromptService(courses, conversations)
+
+
+def create_search_service(environment: Mapping[str, str]) -> SearxNCrawlSearch:
+    try:
+        timeout = float(environment.get("SEARXNCRAWL_TIMEOUT", "60"))
+    except ValueError:
+        raise ValueError("SEARXNCRAWL_TIMEOUT must be a number of seconds.") from None
+    return SearxNCrawlSearch(SearchSettings(timeout), environment)

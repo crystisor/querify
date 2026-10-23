@@ -12,7 +12,7 @@ class DiscordMessageTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.prompts = Mock()
         self.prompts.answer.return_value = "Answer from the notebook"
-        self.bot = CourseBot(Mock(), self.prompts)
+        self.bot = CourseBot(Mock(), self.prompts, Mock())
         self.addAsyncCleanup(self.bot.close)
         self.message = Mock()
         self.message.author.bot = False

@@ -1,6 +1,6 @@
 # Queryfi Discord bot
 
-A Python bot that answers text prompts in bound channels using Open Notebook sources, conversation history, and its configured Ollama model. Five server slash commands manage bindings and conversations:
+A Python bot that answers text prompts in bound channels using Open Notebook sources, conversation history, and its configured Ollama model. It also searches the web using searxNcrawl. Six server slash commands manage bindings, conversations, and web search:
 
 | Command | Result |
 | --- | --- |
@@ -9,6 +9,7 @@ A Python bot that answers text prompts in bound channels using Open Notebook sou
 | `/bind subject_id:<id>` | Binds the current text channel to that notebook ID in SurrealDB. Unknown IDs are rejected. |
 | `/start` | Creates your Open Notebook conversation for this channel. If one is already active, asks you to use `/end` first. |
 | `/end` | Ends only your active conversation in this channel. Its history remains in Open Notebook. |
+| `/search query:<text>` | Searches the web through searxNcrawl and returns up to five results with links, snippets, and provider attribution. Works in unbound channels too. |
 
 Each notebook represents one course subject. Each channel holds one subject; rebinding replaces that channel's previous binding. A subject can be bound to several channels. Bindings persist in Open Notebook's SurrealDB database, in the `queryfi_channel_binding` table, and are isolated by server. Notebook and source records are not modified. All server members with access to the commands can use them, including `/bind`; no administrator permission is required. Responses are visible in the channel. DMs, threads, voice channels, and forum posts are not supported.
 
@@ -48,7 +49,40 @@ Create an application in the [Discord Developer Portal](https://discord.com/deve
 
 Use a bot token, keep it private, and set it locally in `.env` or through the environment. You interact with the bot from your normal Discord account. The script connects as the separate bot account. Enable **Message Content Intent** under **Bot > Privileged Gateway Intents** in the Developer Portal. The bot requests this intent to read ordinary text prompts; without it, the message flow cannot work. No members or presence intent is needed. See [Discord's bot overview](https://docs.discord.com/developers/bots/overview) and the [discord.py slash command example](https://github.com/Rapptz/discord.py/blob/master/examples/app_commands/basic.py).
 
-Startup registers `/list`, `/status`, `/bind`, `/start`, and `/end` globally so they are available in servers where the bot is installed. Commands remain restricted to server text channels. Keep the script running to answer commands and prompts; stop it with Ctrl+C. This bot application should be dedicated to Queryfi: command synchronization replaces that application's global command set. If commands do not appear, check installation scopes, integration command permissions, and startup logs.
+Startup registers `/list`, `/status`, `/bind`, `/start`, `/end`, and `/search` globally so they are available in servers where the bot is installed. Commands remain restricted to server text channels. Keep the script running to answer commands and prompts; stop it with Ctrl+C. This bot application should be dedicated to Queryfi: command synchronization replaces that application's global command set. If commands do not appear, check installation scopes, integration command permissions, and startup logs.
+
+## Web search with searxNcrawl
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and make `uvx` available on the bot process's `PATH`. Queryfi uses the documented [searxNcrawl search CLI](https://github.com/DasDigitaleMomentum/searxNcrawl/blob/main/docs/usage/cli.md), pinned to version `0.32.0`, in uv's isolated environment. No additional bot Python dependency or MCP client configuration is required.
+
+Set at least one provider in `.env` beside `bot.py`:
+
+```dotenv
+SEARXNG_URL=http://localhost:8888
+YDC_API_KEY=
+SEARXNCRAWL_TIMEOUT=60
+```
+
+Use your actual SearXNG base URL and enable JSON output in that instance's `settings.yml`:
+
+```yaml
+search:
+  formats:
+    - html
+    - json
+```
+
+Restart SearXNG after changing its settings. Alternatively, leave `SEARXNG_URL` empty and set a You.com API key in `YDC_API_KEY`. If both are configured, searxNcrawl queries both and merges/deduplicates the results. See its [provider setup instructions](https://github.com/DasDigitaleMomentum/searxNcrawl/blob/main/docs/usage/installation.md) and [search response contract](https://github.com/DasDigitaleMomentum/searxNcrawl/blob/main/docs/usage/mcp-tools.md#search).
+
+Prepare the isolated CLI before starting the bot so dependency downloads do not consume the first search's timeout:
+
+```powershell
+uvx --from searxncrawl==0.32.0 search --help
+```
+
+Restart Queryfi, then use `/search query:Crawl4AI quick start` in a server text channel. The query accepts 1–500 characters. The bot acknowledges the command while searching, then posts up to five results in the channel. Results use the CLI defaults of English and moderate safe search. Long responses are split and mentions are disabled. Search does not require a channel binding or active conversation, does not call Ollama, and does not add results to notebook sources or conversation history. This command searches only; it does not crawl result pages or download Chromium.
+
+`SEARXNCRAWL_TIMEOUT` bounds the CLI invocation, including initialization, to 60 seconds by default (maximum 600). Empty results, timeouts, missing uv, invalid responses, and provider failures receive explanatory replies. With neither provider configured, other bot features still work and `/search` explains which settings are missing. The bot's existing Open Notebook/database startup checks still apply. For troubleshooting, run `uvx --from searxncrawl==0.32.0 search --json --max-results 5 -- "Python tutorials"` from the project directory; the CLI loads `.env` itself. Keep provider keys private.
 
 ## Try the commands
 
@@ -82,7 +116,7 @@ The API contract is documented in the [Open Notebook API reference](https://gith
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Tests cover commands, message routing, conversation reuse and user/channel/server isolation, `/end`, lost active sessions after restart, session ownership writes, notebook source isolation and pagination, Ollama model selection, long replies, timeouts, API validation, parameterized database requests, error handling, and startup configuration without connecting to Discord. To also test real binding persistence, rebinding, and server isolation against your configured services:
+Tests cover commands, message routing, conversation reuse and user/channel/server isolation, `/end`, lost active sessions after restart, session ownership writes, notebook source isolation and pagination, Ollama model selection, long replies, timeouts, API validation, parameterized database requests, error handling, and startup configuration without connecting to Discord. Search tests cover CLI arguments, provider configuration and attribution, Unicode, invalid responses, process failures, query validation, channel restrictions, and mention suppression using a stubbed subprocess. To also test real binding persistence, rebinding, and server isolation against your configured services:
 
 ```powershell
 $env:QUERYFI_LIVE_TEST = "1"
@@ -91,3 +125,13 @@ Remove-Item Env:QUERYFI_LIVE_TEST
 ```
 
 The opt-in check requires two existing notebooks. It creates three temporary bindings under randomly chosen test server IDs and deletes those exact records afterward. It does not modify notebooks or sources. A real Discord check requires running the bot and invoking the commands in your server.
+
+To verify the real searxNcrawl CLI against a temporary local SearXNG test server, without querying public providers or using credentials:
+
+```powershell
+$env:QUERYFI_CLI_TEST = "1"
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_search_cli.py -v
+Remove-Item Env:QUERYFI_CLI_TEST
+```
+
+This requires uv and access to its cache. It downloads the pinned package if it has not already been prepared, and verifies Unicode queries, CLI option isolation, result limits, and provider attribution.
